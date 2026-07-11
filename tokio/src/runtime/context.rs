@@ -1,5 +1,5 @@
 use crate::loom::thread::AccessError;
-use crate::runtime::coop;
+use crate::task::coop;
 
 use std::cell::Cell;
 
@@ -66,7 +66,7 @@ struct Context {
 
     #[cfg(all(
         tokio_unstable,
-        tokio_taskdump,
+        feature = "taskdump",
         feature = "rt",
         target_os = "linux",
         any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
@@ -107,7 +107,7 @@ tokio_thread_local! {
 
             #[cfg(all(
                 tokio_unstable,
-                tokio_taskdump,
+                feature = "taskdump",
                 feature = "rt",
                 target_os = "linux",
                 any(
@@ -131,13 +131,17 @@ pub(crate) fn thread_rng_n(n: u32) -> u32 {
     })
 }
 
-pub(super) fn budget<R>(f: impl FnOnce(&Cell<coop::Budget>) -> R) -> Result<R, AccessError> {
+pub(crate) fn budget<R>(f: impl FnOnce(&Cell<coop::Budget>) -> R) -> Result<R, AccessError> {
     CONTEXT.try_with(|ctx| f(&ctx.budget))
 }
 
 cfg_rt! {
     use crate::runtime::ThreadId;
 
+    // On the SGX platform thread-local data can still be initialized while a
+    // thread is being destroyed, so `thread_id()` would always hand back an id.
+    // This helper lets callers distinguish "already assigned" from "assign on
+    // demand" without materializing a new id.
     #[cfg(target_env = "sgx")]
     pub(crate) fn has_thread_id() -> bool {
         CONTEXT.try_with(|ctx| {
@@ -166,6 +170,11 @@ cfg_rt! {
         CONTEXT.try_with(|ctx| ctx.current_task_id.get()).unwrap_or(None)
     }
 
+    #[cfg(tokio_unstable)]
+    pub(crate) fn worker_index() -> Option<usize> {
+        with_scheduler(|ctx| ctx.and_then(|c| c.worker_index()))
+    }
+
     #[track_caller]
     pub(crate) fn defer(waker: &Waker) {
         with_scheduler(|maybe_scheduler| {
@@ -186,7 +195,14 @@ cfg_rt! {
     #[track_caller]
     pub(super) fn with_scheduler<R>(f: impl FnOnce(Option<&scheduler::Context>) -> R) -> R {
         let mut f = Some(f);
-        CONTEXT.try_with(|c| c.scheduler.with(f.take().unwrap()))
+        CONTEXT.try_with(|c| {
+            let f = f.take().unwrap();
+            if matches!(c.runtime.get(), EnterRuntime::Entered { .. }) {
+                c.scheduler.with(f)
+            } else {
+                f(None)
+            }
+        })
             .unwrap_or_else(|_| (f.take().unwrap())(None))
     }
 

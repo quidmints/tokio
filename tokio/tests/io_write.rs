@@ -1,5 +1,5 @@
 #![warn(rust_2018_idioms)]
-#![cfg(any(feature = "full", feature = "full-sgx"))]
+#![cfg(feature = "full")]
 
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_test::assert_ok;

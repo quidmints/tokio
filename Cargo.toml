@@ -1,19 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-  #"enclave-runner",
   "tokio",
-  "tokio-macros",
-  "tokio-test",
-  "tokio-stream",
-  "tokio-util",
-
-  # Internal
-  "benches",
-  "examples",
-  "stress-test",
-  "tests-build",
-  "tests-integration",
 ]
 
 [workspace.metadata.spellcheck]
@@ -22,7 +10,6 @@ config = "spellcheck.toml"
 [patch.crates-io]
 async-usercalls = { git = "https://github.com/quidmints/rust-sgx", branch = "main" }
 # enclave-runner = { git = "https://github.com/quidmints/rust-sgx", branch = "main" }
-mio = { git = "https://github.com/quidmints/mio", branch = "main" }
 # sgx-isa = { git = "https://github.com/fortanix/rust-sgx", branch = "main" }
 # sgxs = { git = "https://github.com/fortanix/rust-sgx", branch = "main" }
 # tokio = { path = "./tokio" }

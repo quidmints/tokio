@@ -1,6 +1,6 @@
 #![allow(clippy::unnecessary_operation)]
 #![warn(rust_2018_idioms)]
-#![cfg(any(feature = "sync", feature = "full-sgx"))]
+#![cfg(feature = "sync")]
 
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use wasm_bindgen_test::wasm_bindgen_test as test;

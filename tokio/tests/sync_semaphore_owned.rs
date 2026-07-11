@@ -1,4 +1,4 @@
-#![cfg(any(feature = "sync", feature = "full-sgx"))]
+#![cfg(feature = "sync")]
 
 #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -112,6 +112,32 @@ fn merge_unrelated_permits() {
     let mut p1 = sem1.try_acquire_owned().unwrap();
     let p2 = sem2.try_acquire_owned().unwrap();
     p1.merge(p2)
+}
+
+#[test]
+fn split() {
+    let sem = Arc::new(Semaphore::new(5));
+    let mut p1 = sem.clone().try_acquire_many_owned(3).unwrap();
+    assert_eq!(sem.available_permits(), 2);
+    assert_eq!(p1.num_permits(), 3);
+    let mut p2 = p1.split(1).unwrap();
+    assert_eq!(sem.available_permits(), 2);
+    assert_eq!(p1.num_permits(), 2);
+    assert_eq!(p2.num_permits(), 1);
+    let p3 = p1.split(0).unwrap();
+    assert_eq!(p3.num_permits(), 0);
+    drop(p1);
+    assert_eq!(sem.available_permits(), 4);
+    let p4 = p2.split(1).unwrap();
+    assert_eq!(p2.num_permits(), 0);
+    assert_eq!(p4.num_permits(), 1);
+    assert!(p2.split(1).is_none());
+    drop(p2);
+    assert_eq!(sem.available_permits(), 4);
+    drop(p3);
+    assert_eq!(sem.available_permits(), 4);
+    drop(p4);
+    assert_eq!(sem.available_permits(), 5);
 }
 
 #[tokio::test]

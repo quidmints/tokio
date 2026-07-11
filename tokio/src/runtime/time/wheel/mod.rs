@@ -7,19 +7,17 @@ use self::level::Level;
 
 use std::ptr::NonNull;
 
+use super::entry::STATE_DEREGISTERED;
 use super::EntryList;
 
 /// Timing wheel implementation.
 ///
-/// This type provides the hashed timing wheel implementation that backs `Timer`
-/// and `DelayQueue`.
+/// This type provides the hashed timing wheel implementation that backs
+/// [`Driver`].
 ///
-/// The structure is generic over `T: Stack`. This allows handling timeout data
-/// being stored on the heap or in a slab. In order to support the latter case,
-/// the slab must be passed into each function allowing the implementation to
-/// lookup timer entries.
+/// See [`Driver`] documentation for some implementation notes.
 ///
-/// See `Timer` documentation for some implementation notes.
+/// [`Driver`]: crate::runtime::time::Driver
 #[derive(Debug)]
 pub(crate) struct Wheel {
     /// The number of milliseconds elapsed since the wheel started.
@@ -35,7 +33,7 @@ pub(crate) struct Wheel {
     /// * ~ 4 min slots / ~ 4 hr range
     /// * ~ 4 hr slots / ~ 12 day range
     /// * ~ 12 day slots / ~ 2 yr range
-    levels: Vec<Level>,
+    levels: Box<[Level; NUM_LEVELS]>,
 
     /// Entries queued for firing
     pending: EntryList,
@@ -52,11 +50,13 @@ pub(super) const MAX_DURATION: u64 = (1 << (6 * NUM_LEVELS)) - 1;
 impl Wheel {
     /// Creates a new timing wheel.
     pub(crate) fn new() -> Wheel {
-        let levels = (0..NUM_LEVELS).map(Level::new).collect();
-
+        let mut levels = Vec::with_capacity(NUM_LEVELS);
+        for i in 0..NUM_LEVELS {
+            levels.push(Level::new(i));
+        }
         Wheel {
             elapsed: 0,
-            levels,
+            levels: levels.into_boxed_slice().try_into().unwrap(),
             pending: EntryList::new(),
         }
     }
@@ -92,7 +92,7 @@ impl Wheel {
         &mut self,
         item: TimerHandle,
     ) -> Result<u64, (TimerHandle, InsertError)> {
-        let when = item.sync_when();
+        let when = unsafe { item.sync_when() };
 
         if when <= self.elapsed {
             return Err((item, InsertError::Elapsed));
@@ -118,8 +118,8 @@ impl Wheel {
     /// Removes `item` from the timing wheel.
     pub(crate) unsafe fn remove(&mut self, item: NonNull<TimerShared>) {
         unsafe {
-            let when = item.as_ref().cached_when();
-            if when == u64::MAX {
+            let when = item.as_ref().registered_when();
+            if when == STATE_DEREGISTERED {
                 self.pending.remove(item);
             } else {
                 debug_assert!(
@@ -130,7 +130,6 @@ impl Wheel {
                 );
 
                 let level = self.level_for(when);
-
                 self.levels[level].remove_entry(item);
             }
         }
@@ -180,11 +179,11 @@ impl Wheel {
         }
 
         // Check all levels
-        for level in 0..NUM_LEVELS {
-            if let Some(expiration) = self.levels[level].next_expiration(self.elapsed) {
+        for (level_num, level) in self.levels.iter().enumerate() {
+            if let Some(expiration) = level.next_expiration(self.elapsed) {
                 // There cannot be any expirations at a higher level that happen
                 // before this one.
-                debug_assert!(self.no_expirations_before(level + 1, expiration.deadline));
+                debug_assert!(self.no_expirations_before(level_num + 1, expiration.deadline));
 
                 return Some(expiration);
             }
@@ -203,8 +202,8 @@ impl Wheel {
     fn no_expirations_before(&self, start_level: usize, before: u64) -> bool {
         let mut res = true;
 
-        for l2 in start_level..NUM_LEVELS {
-            if let Some(e2) = self.levels[l2].next_expiration(self.elapsed) {
+        for level in &self.levels[start_level..] {
+            if let Some(e2) = level.next_expiration(self.elapsed) {
                 if e2.deadline < before {
                     res = false;
                 }
@@ -233,11 +232,11 @@ impl Wheel {
 
         while let Some(item) = entries.pop_back() {
             if expiration.level == 0 {
-                debug_assert_eq!(unsafe { item.cached_when() }, expiration.deadline);
+                debug_assert_eq!(unsafe { item.registered_when() }, expiration.deadline);
             }
 
             // Try to expire the entry; this is cheap (doesn't synchronize) if
-            // the timer is not expired, and updates cached_when.
+            // the timer is not expired, and updates registered_when.
             match unsafe { item.mark_pending(expiration.deadline) } {
                 Ok(()) => {
                     // Item was expired
@@ -267,7 +266,6 @@ impl Wheel {
     }
 
     /// Obtains the list of entries that need processing for the given expiration.
-    ///
     fn take_entries(&mut self, expiration: &Expiration) -> EntryList {
         self.levels[expiration.level].take_slot(expiration.slot)
     }
@@ -292,7 +290,7 @@ fn level_for(elapsed: u64, when: u64) -> usize {
     let leading_zeros = masked.leading_zeros() as usize;
     let significant = 63 - leading_zeros;
 
-    significant / 6
+    significant / NUM_LEVELS
 }
 
 #[cfg(all(test, not(loom)))]
@@ -302,13 +300,7 @@ mod test {
     #[test]
     fn test_level_for() {
         for pos in 0..64 {
-            assert_eq!(
-                0,
-                level_for(0, pos),
-                "level_for({}) -- binary = {:b}",
-                pos,
-                pos
-            );
+            assert_eq!(0, level_for(0, pos), "level_for({pos}) -- binary = {pos:b}");
         }
 
         for level in 1..5 {
@@ -317,9 +309,7 @@ mod test {
                 assert_eq!(
                     level,
                     level_for(0, a as u64),
-                    "level_for({}) -- binary = {:b}",
-                    a,
-                    a
+                    "level_for({a}) -- binary = {a:b}"
                 );
 
                 if pos > level {
@@ -327,9 +317,7 @@ mod test {
                     assert_eq!(
                         level,
                         level_for(0, a as u64),
-                        "level_for({}) -- binary = {:b}",
-                        a,
-                        a
+                        "level_for({a}) -- binary = {a:b}"
                     );
                 }
 
@@ -338,9 +326,7 @@ mod test {
                     assert_eq!(
                         level,
                         level_for(0, a as u64),
-                        "level_for({}) -- binary = {:b}",
-                        a,
-                        a
+                        "level_for({a}) -- binary = {a:b}"
                     );
                 }
             }

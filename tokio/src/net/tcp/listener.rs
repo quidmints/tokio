@@ -1,7 +1,8 @@
 use crate::io::{Interest, PollEvented};
 use crate::net::tcp::TcpStream;
+use crate::util::check_socket_for_blocking;
 
-cfg_not_wasi! {
+cfg_not_wasip1! {
     #[cfg(not(target_env = "sgx"))]
     use crate::net::to_socket_addrs;
     use crate::net::ToSocketAddrs;
@@ -10,7 +11,7 @@ cfg_not_wasi! {
 use std::fmt;
 use std::io;
 use std::net::{self, SocketAddr};
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 cfg_net! {
     /// A TCP socket server, listening for connections.
@@ -19,6 +20,8 @@ cfg_net! {
     /// method.
     ///
     /// A `TcpListener` can be turned into a `Stream` with [`TcpListenerStream`].
+    ///
+    /// The socket will be closed when the value is dropped.
     ///
     /// [`TcpListenerStream`]: https://docs.rs/tokio-stream/0.1/tokio_stream/wrappers/struct.TcpListenerStream.html
     ///
@@ -59,7 +62,7 @@ cfg_net! {
 }
 
 impl TcpListener {
-    cfg_not_wasi! {
+    cfg_not_wasip1! {
         /// Creates a new `TcpListener`, which will be bound to the specified address.
         ///
         /// The returned listener is ready for accepting connections.
@@ -74,7 +77,7 @@ impl TcpListener {
         /// the addresses succeed in creating a listener, the error returned from
         /// the last attempt (the last address) is returned.
         ///
-        /// This function sets the `SO_REUSEADDR` option on the socket.
+        /// This function sets the `SO_REUSEADDR` option on the socket on Unix.
         ///
         /// To configure the socket before binding, you can use the [`TcpSocket`]
         /// type.
@@ -86,11 +89,11 @@ impl TcpListener {
         ///
         /// ```no_run
         /// use tokio::net::TcpListener;
-        ///
         /// use std::io;
         ///
         /// #[tokio::main]
         /// async fn main() -> io::Result<()> {
+        /// #   if cfg!(miri) { return Ok(()); } // No `socket` in miri.
         ///     let listener = TcpListener::bind("127.0.0.1:2345").await?;
         ///
         ///     // use the listener
@@ -220,6 +223,10 @@ impl TcpListener {
     /// will block the thread, which will cause unexpected behavior.
     /// Non-blocking mode can be set using [`set_nonblocking`].
     ///
+    /// Passing a listener in blocking mode is always erroneous,
+    /// and the behavior in that case may change in the future.
+    /// For example, it could panic.
+    ///
     /// [`set_nonblocking`]: std::net::TcpListener::set_nonblocking
     ///
     /// # Examples
@@ -247,6 +254,8 @@ impl TcpListener {
     /// explicitly with [`Runtime::enter`](crate::runtime::Runtime::enter) function.
     #[track_caller]
     pub fn from_std(listener: net::TcpListener) -> io::Result<TcpListener> {
+        check_socket_for_blocking(&listener)?;
+
         let io = mio::net::TcpListener::from_std(listener);
         let io = PollEvented::new(io)?;
         Ok(TcpListener { io })
@@ -274,13 +283,11 @@ impl TcpListener {
     /// [`tokio::net::TcpListener`]: TcpListener
     /// [`std::net::TcpListener`]: std::net::TcpListener
     /// [`set_nonblocking`]: fn@std::net::TcpListener::set_nonblocking
-    #[cfg(not(target_env = "sgx"))] // `TcpListener::into_raw_fd()` not support by `mio` for SGX platform
+    #[cfg(not(target_env = "sgx"))] // `TcpListener::into_raw_fd()` not supported by `mio` for the SGX platform
     pub fn into_std(self) -> io::Result<std::net::TcpListener> {
         #[cfg(unix)]
         {
-            #[cfg(unix)]
             use std::os::unix::io::{FromRawFd, IntoRawFd};
-
             self.io
                 .into_inner()
                 .map(IntoRawFd::into_raw_fd)
@@ -298,7 +305,7 @@ impl TcpListener {
 
         #[cfg(target_os = "wasi")]
         {
-            use std::os::wasi::io::{FromRawFd, IntoRawFd};
+            use std::os::fd::{FromRawFd, IntoRawFd};
             self.io
                 .into_inner()
                 .map(|io| io.into_raw_fd())
@@ -306,7 +313,7 @@ impl TcpListener {
         }
     }
 
-    cfg_not_wasi! {
+    cfg_not_wasip1! {
         pub(crate) fn new(listener: mio::net::TcpListener) -> io::Result<TcpListener> {
             let io = PollEvented::new(listener)?;
             Ok(TcpListener { io })
@@ -407,7 +414,7 @@ impl TryFrom<net::TcpListener> for TcpListener {
 
 impl fmt::Debug for TcpListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.io.fmt(f)
+        (*self.io).fmt(f)
     }
 }
 
@@ -433,7 +440,7 @@ cfg_unstable! {
     #[cfg(target_os = "wasi")]
     mod sys {
         use super::TcpListener;
-        use std::os::wasi::prelude::*;
+        use std::os::fd::{RawFd, BorrowedFd, AsRawFd, AsFd};
 
         impl AsRawFd for TcpListener {
             fn as_raw_fd(&self) -> RawFd {

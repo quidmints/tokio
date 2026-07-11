@@ -56,7 +56,19 @@ use std::io;
 ///     // Your handler here
 /// });
 /// ```
+#[cfg(not(target_env = "sgx"))]
 pub async fn ctrl_c() -> io::Result<()> {
     os_impl::ctrl_c()?.recv().await;
+    Ok(())
+}
+
+// SGX: an enclave receives no OS signals. In the cloud deployment the host
+// runner (a normal Linux process) owns lifecycle — the orchestrator's SIGTERM
+// goes to *it*, and it drives enclave teardown. So in-enclave `ctrl_c()` can
+// never fire; it pends forever, and the daemon's shutdown `select!` falls
+// through to its host-driven / fatal-error arms instead.
+#[cfg(target_env = "sgx")]
+pub async fn ctrl_c() -> io::Result<()> {
+    std::future::pending::<()>().await;
     Ok(())
 }

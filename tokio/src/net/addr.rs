@@ -44,7 +44,6 @@ where
     #[cfg(target_env = "sgx")]
     type StringIter = T::StringIter;
 
-
     fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
         (**self).to_socket_addrs(sealed::Internal)
     }
@@ -181,6 +180,9 @@ impl sealed::ToSocketAddrsPriv for (Ipv6Addr, u16) {
 
 // ===== impl &[SocketAddr] =====
 
+// There is no name resolution mechanism in SGX, but bind and connect take
+// arbitrary addresses represented as strings, so slices are stringified
+// through an owned iterator (avoids borrowing `self`'s lifetime).
 #[cfg(target_env = "sgx")]
 #[derive(Debug)]
 pub struct ToStringIter<I>(I);
@@ -200,11 +202,11 @@ where
 
 impl ToSocketAddrs for &[SocketAddr] {}
 
-impl<'a> sealed::ToSocketAddrsPriv for &'a [SocketAddr] {
+impl sealed::ToSocketAddrsPriv for &[SocketAddr] {
     type Iter = std::vec::IntoIter<SocketAddr>;
     type Future = ReadyFuture<Self::Iter>;
     #[cfg(target_env = "sgx")]
-    type StringIter = ToStringIter<std::slice::Iter<'a, SocketAddr>>;
+    type StringIter = ToStringIter<std::vec::IntoIter<SocketAddr>>;
 
     fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
         #[inline]
@@ -228,7 +230,7 @@ impl<'a> sealed::ToSocketAddrsPriv for &'a [SocketAddr] {
 
     #[cfg(target_env = "sgx")]
     fn to_string_addrs(&self) -> Self::StringIter {
-        ToStringIter(self.iter())
+        ToStringIter(self.to_vec().into_iter())
     }
 }
 
@@ -385,7 +387,7 @@ pub(crate) mod sealed {
 
         use std::option;
         use std::pin::Pin;
-        use std::task::{Context, Poll};
+        use std::task::{ready,Context, Poll};
         use std::vec;
 
         #[doc(hidden)]

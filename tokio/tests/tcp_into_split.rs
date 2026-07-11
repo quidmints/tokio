@@ -1,5 +1,6 @@
 #![warn(rust_2018_idioms)]
-#![cfg(all(any(feature = "full", feature = "full-sgx"), not(target_os = "wasi")))] // Wasi doesn't support bind
+#![cfg(all(feature = "full", not(target_os = "wasi"), not(miri)))] // Wasi doesn't support multithreading or peeking
+                                                                   // No `socket` on miri.
 
 use std::io::{Error, ErrorKind, Result};
 use std::io::{Read, Write};
@@ -44,7 +45,6 @@ async fn split() -> Result<()> {
             assert_eq!(peek_len1, peek_len2);
 
             let read_len = read_half.read(&mut read_buf[..]).await?;
-            #[cfg(not(target_env = "sgx"))] // peek always returns Ok(0) in SGX
             assert_eq!(peek_len1, read_len);
             assert_eq!(&read_buf[..read_len], MSG);
             Ok(())
@@ -82,7 +82,6 @@ async fn reunite() -> Result<()> {
 }
 
 /// Test that dropping the write half actually closes the stream.
-#[cfg_attr(target_env = "sgx", ignore = "Shutdown is ineffective on SGX platform")]
 #[tokio::test]
 async fn drop_write() -> Result<()> {
     const MSG: &[u8] = b"split";
@@ -99,7 +98,7 @@ async fn drop_write() -> Result<()> {
             Ok(0) => Ok(()),
             Ok(len) => Err(Error::new(
                 ErrorKind::Other,
-                format!("Unexpected read: {} bytes.", len),
+                format!("Unexpected read: {len} bytes."),
             )),
             Err(err) => Err(err),
         };
@@ -124,8 +123,8 @@ async fn drop_write() -> Result<()> {
 
     match read_half.read(&mut read_buf[..]).await {
         Ok(0) => {}
-        Ok(len) => panic!("Unexpected read: {} bytes.", len),
-        Err(err) => panic!("Unexpected error: {}.", err),
+        Ok(len) => panic!("Unexpected read: {len} bytes."),
+        Err(err) => panic!("Unexpected error: {err}."),
     }
 
     handle.join().unwrap().unwrap();
